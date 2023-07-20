@@ -206,21 +206,35 @@ module overmind::split_or_steal {
     //==============================================================================================
 
     /*
-        Function called at the deployment of the module
-        @param account - deployer of the module
+    Function called at the deployment of the module
+    @param account - deployer of the module
     */
     fun init_module(account: &signer) {
-        // TODO: Create a resource account (utilize SEED const)
+        // Create a resource account (utilize SEED const)
+        let resource_account_address = signer::address_from_encoded_string(SEED);
 
-        // TODO: Register the resource account with AptosCoin
+        // Register the resource account with AptosCoin
+        AptosCoin::register_account(&resource_account_address);
 
-        // TODO: Create a new State instance and move it to `account` signer
+        // Create a new State instance and move it to `account` signer
+        let state = State {
+            next_game_id: 0,
+            games: SimpleMap::new(),
+            cap: signer::get_cap(),
+            create_game_events: EventHandle::new(),
+            submit_decision_events: EventHandle::new(),
+            reveal_decision_events: EventHandle::new(),
+            conclude_game_events: EventHandle::new(),
+            release_funds_after_expiration_events: EventHandle::new(),
+        };
+
+        move_to(account, state);
     }
 
     /*
         Creates a new game
         @param account - deployer of the module
-        @param prize_pool_amount - amout of APT that can be won in the game
+        @param prize_pool_amount - amount of APT that can be won in the game
         @param player_one_address - address of the first player participating in the game
         @param player_two_address - address of the second player participating in the game
     */
@@ -230,28 +244,58 @@ module overmind::split_or_steal {
         player_one_address: address,
         player_two_address: address
     ) acquires State {
-        // TODO: Call `check_is_state_exists` function
+        // Call `check_if_state_exists` function
+        check_if_state_exists();
 
-        // TODO: Call `check_if_signer_is_contract_deployer` function
+        // Call `check_if_signer_is_contract_deployer` function
+        check_if_signer_is_contract_deployer(account);
 
-        // TODO: Call `check_if_signer_has_enough_apt_coins` function
+        // Call `check_if_signer_has_enough_apt_coins` function
+        check_if_account_has_enough_apt_coins(account, prize_pool_amount);
 
-        // TODO: Call `get_next_game_id` function
+        // Call `get_next_game_id` function
+        let game_id = get_next_game_id(&mut move_from<&mut State>(account).next_game_id);
 
-        // TODO: Create a new instance of Game
+        // Create a new instance of Game
+        let game = Game {
+            prize_pool_amount,
+            player_one: PlayerData {
+                player_address: player_one_address,
+                decision_hash: None,
+                salt_hash: None,
+                decision: DECISION_NOT_MADE,
+            },
+            player_two: PlayerData {
+                player_address: player_two_address,
+                decision_hash: None,
+                salt_hash: None,
+                decision: DECISION_NOT_MADE,
+            },
+            expiration_timestamp_in_seconds: timestamp::now().seconds() + EXPIRATION_TIME_IN_SECONDS,
+        };
 
-        // TODO: Add the game to the State's games SimpleMap instance
+        // Add the game to the State's games SimpleMap instance
+        move_to(account, game, &mut move_from<&mut State>(account).games[&game_id]);
 
-        // TODO: Transfer `prize_pool_amount` amount of APT from `account` to the resource account
+        // Transfer `prize_pool_amount` amount of APT from `account` to the resource account
+        AptosCoin::transfer_from_sender(account, &resource_account(), prize_pool_amount);
 
-        // TODO: Emit `CreateGameEvent` event
+        // Emit `CreateGameEvent` event
+        emit CreateGameEvent {
+            game_id,
+            prize_pool_amount,
+            player_one_address,
+            player_two_address,
+            expiration_timestamp_in_seconds: game.expiration_timestamp_in_seconds,
+            event_creation_timestamp_in_seconds: timestamp::now().seconds(),
+        };
     }
 
     /*
         Saves a player's decision in their PlayerData instance in the game with the provided `game_id`
         @param player - player participating in the game
         @param game_id - ID of the game
-        @param decision_hash - SHA3_256 hash of combination of the player's decision and the player's salt
+        @param decision_hash - SHA3_256 hash of the combination of the player's decision and the player's salt
         @param salt_hash - SHA3_256 hash of the player's salt
     */
     public entry fun submit_decision(
@@ -260,17 +304,35 @@ module overmind::split_or_steal {
         decision_hash: vector<u8>,
         salt_hash: vector<u8>
     ) acquires State {
-        // TODO: Call `check_if_state_exists` function
+        // Call `check_if_state_exists` function
+        check_if_state_exists();
 
-        // TODO: Call `check_if_game_exists` function
+        // Call `check_if_game_exists` function
+        check_if_game_exists(&move_from<State>(player).games, &game_id);
 
-        // TODO: Call `check_if_player_participates_in_the_game` function
+        // Call `check_if_player_participates_in_the_game` function
+        let game = &mut move_from<State>(player).games[&game_id];
+        check_if_player_participates_in_the_game(player, game);
 
-        // TODO: Call `check_if_player_does_not_have_a_decision_submitted` function
+        // Call `check_if_player_does_not_have_a_decision_submitted` function
+        let player_address = signer::address_of(player);
+        check_if_player_does_not_have_a_decision_submitted(game, player_address);
 
-        // TODO: Set the player's PlayerData decision_hash and salt_hash fields to the values provided in the params
+        // Set the player's PlayerData decision_hash and salt_hash fields to the values provided in the params
+        if player_address == game.player_one.player_address {
+            game.player_one.decision_hash = Some(decision_hash);
+            game.player_one.salt_hash = Some(salt_hash);
+        } else {
+            game.player_two.decision_hash = Some(decision_hash);
+            game.player_two.salt_hash = Some(salt_hash);
+        }
 
-        // TODO: Emit `SubmitDecisionEvent` event
+        // Emit `SubmitDecisionEvent` event
+        emit SubmitDecisionEvent {
+            game_id,
+            player_address,
+            event_creation_timestamp_in_seconds: timestamp::now().seconds(),
+        };
     }
 
     /*
@@ -285,26 +347,65 @@ module overmind::split_or_steal {
         game_id: u128,
         salt: String
     ) acquires State {
-        // TODO: Call `check_if_state_exists` function
+        // Call `check_if_state_exists` function
+        check_if_state_exists();
 
-        // TODO: Call `check_if_game_exists` function
+        // Call `check_if_game_exists` function
+        let games = &mut move_from<State>(player).games;
+        check_if_game_exists(games, &game_id);
 
-        // TODO: Call `check_if_player_participates_in_the_game` function
+        // Call `check_if_player_participates_in_the_game` function
+        let game = &mut games[&game_id];
+        check_if_player_participates_in_the_game(player, game);
 
-        // TODO: Call `check_if_both_players_have_a_decision_submitted` function
+        // Call `check_if_both_players_have_a_decision_submitted` function
+        check_if_both_players_have_a_decision_submitted(game);
 
-        // TODO: Call `make_decision` function with appropriate PlayerData instance depending on the player's address
+        // Call `make_decision` function with appropriate PlayerData instance depending on the player's address
+        let player_address = signer::address_of(player);
+        let decision = if player_address == game.player_one.player_address {
+            make_decision(&mut game.player_one, &salt)
+        } else {
+            make_decision(&mut game.player_two, &salt)
+        };
 
-        // TODO: Emit `RevealDecisionEvent` event
+        // Emit `RevealDecisionEvent` event
+        emit RevealDecisionEvent {
+            game_id,
+            player_address,
+            decision,
+            event_creation_timestamp_in_seconds: timestamp::now().seconds(),
+        };
 
-        // TODO: If both players submitted their decisions:
-        //      1) Remove the game from the State's game SimpleMap instance
-        //      2) If both players decided to split, send half of the game's `prize_pool_amount` of APT to both of them
-        //      3) If one of the players decided to steal and the other one to split, send
-        //          the game's `prize_pool_amount` of APT to the player that decided to steal
-        //      4) If both players decided to steal, send the game's `prize_pool_amount` of APT to the deployer
-        //          of the contract
-        //      5) Emit `ConcludeGameEvent` event
+        // If both players submitted their decisions:
+        if game.player_one.decision_hash.is_some() && game.player_two.decision_hash.is_some() {
+            // Remove the game from the State's game SimpleMap instance
+            games.remove(&game_id);
+
+            // If both players decided to split, send half of the game's `prize_pool_amount` of APT to both of them
+            if game.player_one.decision == DECISION_SPLIT && game.player_two.decision == DECISION_SPLIT {
+                let prize = game.prize_pool_amount / 2;
+                AptosCoin::transfer_from_sender(account, &game.player_one.player_address, prize);
+                AptosCoin::transfer_from_sender(account, &game.player_two.player_address, prize);
+            }
+            // If one of the players decided to steal and the other one to split, send
+            // the game's `prize_pool_amount` of APT to the player that decided to steal
+            else if (game.player_one.decision == DECISION_SPLIT && game.player_two.decision == DECISION_STEAL) ||
+                    (game.player_one.decision == DECISION_STEAL && game.player_two.decision == DECISION_SPLIT) {
+                AptosCoin::transfer_from_sender(account, &game.player_two.player_address, game.prize_pool_amount);
+            }
+            // If both players decided to steal, send the game's `prize_pool_amount` of APT to the deployer
+            // of the contract
+            else if game.player_one.decision == DECISION_STEAL && game.player_two.decision == DECISION_STEAL {
+                AptosCoin::transfer_from_sender(account, &resource_account(), game.prize_pool_amount);
+            }
+
+            // Emit `ConcludeGameEvent` event
+            emit ConcludeGameEvent {
+                game_id,
+                event_creation_timestamp_in_seconds: timestamp::now().seconds(),
+            };
+        }
     }
 
     /*
@@ -313,45 +414,75 @@ module overmind::split_or_steal {
         @param game_id - ID of the game
     */
     public entry fun release_funds_after_expiration(_account: &signer, game_id: u128) acquires State {
-        // TODO: Call `check_if_state_exists` function
+        // Call `check_if_state_exists` function
+        check_if_state_exists();
 
-        // TODO: Call `check_if_game_exists` function
+        // Call `check_if_game_exists` function
+        let games = &mut move_from<State>(_account).games;
+        check_if_game_exists(games, &game_id);
 
-        // TODO: Remove the game from the State's games SimpleMap instance
+        // Remove the game from the State's games SimpleMap instance
+        games.remove(&game_id);
 
-        // TODO: Call `check_if_game_expired` function
+        // Call `check_if_game_expired` function
+        let game = games[&game_id];
+        check_if_game_expired(&game);
 
-        // TODO: Transfer the game's `prize_pool_amount` APT amount to:
-        //      1) The deployer of the contract if the both players' decisions were not releaved
-        //      2) The first player if the second player did not releave their decision
-        //      3) The second player if the first player did not releave their decision
+        // Transfer the game's `prize_pool_amount` APT amount to:
+        // 1) The deployer of the contract if both players' decisions were not revealed
+        // 2) The first player if the second player did not reveal their decision
+        // 3) The second player if the first player did not reveal their decision
+        if game.player_one.decision_hash.is_none() || game.player_two.decision_hash.is_none() {
+            AptosCoin::transfer_from_sender(account, &resource_account(), game.prize_pool_amount);
+        } else {
+            AptosCoin::transfer_from_sender(account, &game.player_one.player_address, game.prize_pool_amount);
+        }
 
-        // TODO: Emit `ReleaseFundsAfterExpirationEvent` event
+        // Emit `ReleaseFundsAfterExpirationEvent` event
+        emit ReleaseFundsAfterExpirationEvent {
+            game_id,
+            event_creation_timestamp_in_seconds: timestamp::now().seconds(),
+        };
     }
+
 
     //==============================================================================================
     // Helper functions
     //==============================================================================================
 
+    
     /*
-        Sets the PlayerData's decision field's value to either DECISION_SPLIT or DECISION_STEAL depending on value of
-        the PlayerData's decision_hash value
-        @param player_data - instance of PlayerData struct
-        @param salt - salt that the player used to hash their decision
-        @return - the decision made and submitted in `submit_decision` function
-            (either DECISION_SPLIT or DECISION_STEAL)
+    Sets the PlayerData's decision field's value to either DECISION_SPLIT or DECISION_STEAL depending on the value of
+    the PlayerData's decision_hash value
+    @param player_data - instance of PlayerData struct
+    @param salt - salt that the player used to hash their decision
+    @return - the decision made and submitted in `submit_decision` function
+        (either DECISION_SPLIT or DECISION_STEAL)
     */
     inline fun make_decision(player_data: &mut PlayerData, salt: &String): u64 {
-        // TODO: Call `check_if_hash_is_correct` function
+        if let Some(decision_hash) = &player_data.decision_hash {
+            // Call `check_if_hash_is_correct` function
+            check_if_hash_is_correct(decision_hash, bcs::to_bytes(player_data.decision).unwrap() + salt.as_bytes());
 
-        // TODO: Create a SHA3_256 hash of a split decision from a vector containing serialized DECISION_SPLIT const
-        //      and bytes of the salt
+            // Create a SHA3_256 hash of a split decision from a vector containing serialized DECISION_SPLIT const
+            // and bytes of the salt
+            let split_decision_hash = sha3_256(bcs::to_bytes(DECISION_SPLIT).unwrap() + salt.as_bytes());
 
-        // TODO: Create a SHA3_256 hash of a steal decision from a vector containing serialized DECISION_STEAL const
-        //      and bytes of the salt
+            // Create a SHA3_256 hash of a steal decision from a vector containing serialized DECISION_STEAL const
+            // and bytes of the salt
+            let steal_decision_hash = sha3_256(bcs::to_bytes(DECISION_STEAL).unwrap() + salt.as_bytes());
 
-        // TODO: Compare the hashes with the PlayerData's `decision_hash` and return either DECISION_SPLIT
-        //      or DECISION_STEAL depending on the result
+            // Compare the hashes with the PlayerData's `decision_hash` and return either DECISION_SPLIT
+            // or DECISION_STEAL depending on the result
+            if decision_hash == &split_decision_hash {
+                return DECISION_SPLIT;
+            } else if decision_hash == &steal_decision_hash {
+                return DECISION_STEAL;
+            }
+        }
+
+        // In case the decision_hash does not match any of the expected hashes or is None, the decision is considered not made
+        DECISION_NOT_MADE
     }
 
     /*
@@ -360,55 +491,76 @@ module overmind::split_or_steal {
         @return - value of `next_game_id` field from State resource before the increment
     */
     inline fun get_next_game_id(next_game_id: &mut u128): u128 {
-        // TODO: Create a variable holding a copy of current value of `next_game_id` param
+        // Create a variable holding a copy of the current value of `next_game_id` param
+        let prev_game_id = *next_game_id;
 
-        // TODO: Increment `next_game_id` param
+        // Increment `next_game_id` param
+        *next_game_id += 1;
 
-        // TODO: Return the previously created variable
+        // Return the previously created variable
+        prev_game_id
     }
+
 
     //==============================================================================================
     // Validation functions
     //==============================================================================================
 
     inline fun check_if_state_exists() {
-        // TODO: Assert that State resource exists under the contract deployer's address
+        // Assert that State resource exists under the contract deployer's address
+        assert(exists<State>(signer::address_of(signer::address())), EStateDoesNotExist);
     }
 
     inline fun check_if_signer_is_contract_deployer(signer: &signer) {
-        // TODO: Assert that address of `signer` is the same as address of `overmind` located in Move.toml file
+        // Assert that address of `signer` is the same as address of `overmind` located in Move.toml file
+        assert(signer::address_of(signer) == signer::address_from_encoded_string(OVERMIND_ADDRESS), ENotAuthorized);
     }
 
     inline fun check_if_account_has_enough_apt_coins(account: &signer, amount: u64) {
-        // TODO: Assert that AptosCoin balance of `account` address equals or is greater that `amount` param
+        // Assert that AptosCoin balance of `account` address equals or is greater than `amount` param
+        let account_balance = AptosCoin::balance_of(&signer::address_of(account));
+        assert(account_balance >= amount, ENotEnoughBalance);
     }
 
     inline fun check_if_game_exists(games: &SimpleMap<u128, Game>, game_id: &u128) {
-        // TODO: Assert that `game` SimpleMap contains `game_id` key
+        // Assert that `games` SimpleMap contains `game_id` key
+        assert(games.contains_key(game_id), EGameDoesNotExist);
     }
 
     inline fun check_if_player_participates_in_the_game(player: &signer, game: &Game) {
-        // TODO: Assert that address of `player` is the same as either address of the first player or address of
-        //      the second player stored in the Game instance
+        // Assert that address of `player` is the same as either address of the first player or address of
+        // the second player stored in the Game instance
+        assert(signer::address_of(player) == game.player_one.player_address || 
+            signer::address_of(player) == game.player_two.player_address, EPlayerDoesNotParticipateInTheGame);
     }
 
     inline fun check_if_both_players_have_a_decision_submitted(game: &Game) {
-        // TODO: Assert that both PlayerData's `decision_hash` fields are option::some
+        // Assert that both PlayerData's `decision_hash` fields are option::some
+        assert(game.player_one.decision_hash.is_some() && game.player_two.decision_hash.is_some(), EDecisionNotSubmitted);
     }
 
     inline fun check_if_player_does_not_have_a_decision_submitted(game: &Game, player_address: address) {
-        // TODO: Assert that the player's PlayerData's `decision_hash` is option::none depending on `player_address`
-        //      param's value
-        // TODO: Abort with `EPlayerDoesNotParticipateInTheGame` code if `player_address` param's value does not match
-        //      any address of the players participating in the game
+        // Assert that the player's PlayerData's `decision_hash` is option::none depending on `player_address`
+        // param's value
+        let player_data = if player_address == game.player_one.player_address {
+            &game.player_one
+        } else if player_address == game.player_two.player_address {
+            &game.player_two
+        } else {
+            panic("Invalid player address")
+        };
+        assert(player_data.decision_hash.is_none(), EDecisionAlreadySubmitted);
     }
 
     inline fun check_if_hash_is_correct(hash: vector<u8>, value: vector<u8>) {
-        // TODO: Assert that `hash` param equals SHA3_256 hash of `value` param
+        // Assert that `hash` param equals SHA3_256 hash of `value` param
+        assert(hash == hash::sha3_256(&value), EIncorrectHashValue);
     }
 
     inline fun check_if_game_expired(game: &Game) {
-        // TODO: Assert that the Game's `expiration_timestamp_in_seconds` is smaller than current timestamp
+        // Assert that the Game's `expiration_timestamp_in_seconds` is smaller than the current timestamp
+        let current_timestamp = timestamp::now().seconds();
+        assert(game.expiration_timestamp_in_seconds < current_timestamp, EGameNotExpired);
     }
 
     //==============================================================================================
